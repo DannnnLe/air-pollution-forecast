@@ -1,0 +1,468 @@
+---
+title: "project2"
+output: html_document
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, error = FALSE,
+warning = FALSE, message = FALSE, 
+fig.align = "center",
+R.options = list(max.print=100))
+set.seed(2022-11-04)
+```
+
+# Forecasting Ambient Air Pollution Levels Across the United States
+### Members: Dan Le, Reigne Evangelista
+
+## Introduction
+
+For this project, the models we used were a regular linear regression, KNN, decision tree, and finally random foresting models. In order to test the accuracy of said models we used the same predictors for every test. This ensures that there is a fixed variable which will eliminate variation causing the RSME to change, but rather the RMSE changes for every model because of the overall structure and manipulation of data.
+
+One of our predictors include the specific locations of the monitors by including **lat** (latitude) and **lon** (longitude). These variables were chosen to be predictors as they correlate to the monitors themselves and there overall location, which may change in specific states or even counties. The next variable chosen was **pov**. This variable was chosen due to the idea that there are typically more poverty stricken individuals in areas where there are large pollutants such as factories which contribute heavily to the overall air pollution, or in areas where there is a large disparity of wealthy individuals versus poverty stricken individuals. In these areas there tends to be more poverty stricken individuals than that of wealthy individuals which may help to navigate if there are outstanding variables not considered in this dataset which may in fact directly or indirectly contribute to the overal air pollution. The next variable chosen, **zcta_pop** was mainly due to the fact that the higher the zcta_pop, the more dense people are living together which can cause and overall increase in the concentration of PM2.5 levels in the air. This can account for states that are considered smaller than others but may in fact contribute the most when looking at locations such as NYC or San Francisco, where living quarters tend to be compressed. The last variable chosen was that of **CMAQ**. This variable was chosen as it does not take into account one single aspect but rather various other predictor variables of it's own choosing to then predict an overall value for its simulated air quality. This is important to take into account as this variable has it's own system of how it regulates the values it predicts, and so we can then see if this variable in and of itself is just as good as a stand-alone predictor varible to see the concentration of PM2.5 levels in the air. 
+
+When considering the exploratory analysis between the independent predictor variables on the PM2.5 levels, we will use scatterplots to notice relationships between the variables. We expect there to be no relationship between the **lon** and **lat** as they describe the location of the region, yet expect to see a positive relationship with **pov** as the greater the poverty levels, the possibility of greater amounts of factories and other more labor-intensive and harmful jobs that then affect air pollution. When looking **zcta_pop** we also expect a positive relationship with air pollution, as the more people the greater the need to urbanize the region (cars, jobs, buildings) and less of a need to conserve the lands such as forests and other ecosystems. Lastly **CMAQ** we expect there to be a more linear relationship, as CMAQ has its own process to find the estimated value of PM2.5 levels and if this system is as good as the monitors, we should see the values from the CMAQ and the monitors to be synonymous. 
+
+Our expectation for what the best RMSE value is based on the models themselves. When taking account the complexity of Random Forest models vs. Linear Regression, we expect a better/lower RMSE value for the Random Forest. 
+
+### Primary Questions
+1. Based on test set performance, at what locations does your model give predictions that are closest and furthest from the observed values? What do you hypothesize are the reasons for the good or bad performance at these locations?
+
+2. What variables might predict where your model performs well or not? For example, are their regions of the country where the model does better or worse? Are there variables that are not included in this dataset that you think might improve the model performance if they were included in your model?
+
+3. There is interest in developing more cost-effect approaches to monitoring air pollution on the ground. Two candidates for replacing the use of ground-based monitors are numerical models like CMAQ and satellite-based observations such as AOD. How well do CMAQ and AOD predict ground-level concentrations of PM2.5? How does the prediction performance of your model change when CMAQ or aod are included (or not included) in the model?
+
+4. The dataset here did not include data from Alaska or Hawaii. Do you think your model will perform well or not in those two states? Explain your reasoning.
+
+
+## Data Preparation and Wrangling
+
+### Load Packages and Dataset
+
+```{r}
+## Load Data and Packages
+library(knitr)
+library(kableExtra)
+library(tidyverse)
+library(tidyr)
+library(tidymodels)
+library(rpart)
+library(rpart.plot)
+library(dials)
+library(caret)
+library(ranger)
+dat <- read_csv("https://github.com/rdpeng/stat322E_public/raw/main/data/pm25_data.csv.gz")
+head(dat)
+```
+
+### Split Data
+
+To construct a prediction model for PM2.5, we've partitioned the dataset into distinct training and test sets. The **training** dataset encompasses 75% of the data, while the **testing** dataset comprises the remaining 25%. This division was achieved using the `initial_split` function.
+
+```{r}
+# Create training and testing data
+split <- initial_split(dat, prop = 0.75)
+
+train_dat <- training(split)
+
+test_dat <- testing(split)
+```
+
+## Result
+
+### Linear Regression
+
+In the development of the linear regression model, we begin by preparing the data through a normalization process using the `recipe` function. This ensures that all numeric predictors, such as latitude, longitude, poverty level, population in ZIP code, and air quality metrics, are appropriately scaled. Subsequently, we construct a linear regression model using the `linear_reg` function with the `lm` engine, specifying `regression` as the modeling mode. The model development is encapsulated within a comprehensive workflow using the `workflow` function, which combines the data preparation steps and the linear regression model. The model is then fitted to the training data to learn the underlying relationships between the predictors and the target variable.
+
+```{r}
+# Set recipe (also work for other models)
+rec <- train_dat %>%
+  recipe(value ~ lat + lon + pov + zcta_pop + CMAQ) %>% 
+  step_normalize(all_numeric_predictors(),-lat, -lon)
+
+# Set model
+lm_model <- linear_reg() %>% 
+  set_engine("lm") %>% 
+  set_mode("regression")
+
+# Set workflow
+lm_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(lm_model)
+
+# Fit the model to training data
+lm_fit <- fit(lm_wf, data = train_dat)
+
+# Prepare test data (also work for other models)
+test_prep_dat <- rec %>%
+  prep(train_dat) %>% 
+  bake(new_dat = test_dat)
+
+# Evaluate model on test data and calculate RMSE
+lm_fit %>%
+  extract_fit_parsnip() %>%
+  augment(new_data = test_prep_dat) %>%
+  summarize(rmse = sqrt(mean(.resid ** 2)))
+
+# Check performance using cross-validation
+
+## Create cross-validation folds
+folds <- vfold_cv(train_dat, v = 10)
+
+## Fit the model using cross-validation and collect performance metrics
+res <- fit_resamples(lm_wf, resamples = folds)
+res %>% 
+  collect_metrics()
+```
+**Linear Regression has the testing RMSE value of 2.14837 and training RMSE value of 2.2845211.**
+
+
+### k-Nearest Neighbors
+
+In this code, we are developing a k-Nearest Neighbors (KNN) regression model with the goal of predicting the target variable. The process begins by setting up the KNN model for tuning, specifying the number of neighbors as a hyperparameter to optimize. A grid of hyperparameter values is created for tuning using the `grid_regular` function. Subsequently, a workflow is established by integrating the data preparation steps, defined earlier in the `rec` recipe, with the KNN model. The model undergoes tuning through a grid search approach, where different hyperparameter combinations are evaluated using cross-validation on the training data. The optimal set of hyperparameters is identified based on minimizing the root mean squared error (RMSE). The workflow is then finalized with the best hyperparameter configuration. The KNN model is fitted to the training data, and its performance is assessed on a separate test dataset. 
+
+```{r}
+# Tuning
+## Set knn model for tuning
+tune_spec_knn <- nearest_neighbor(neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode ("regression")
+
+## Create a grid for tuning
+knn_grid <- grid_regular(neighbors(), levels = 5)
+
+## Set workflow
+knn_wf <- workflow() %>%
+  add_recipe(rec) %>%
+  add_model (tune_spec_knn)
+
+## Tune model
+knn_res <- knn_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = knn_grid)
+
+## Identify the best neighbour value based on RMSE
+best_knn <- knn_res %>%
+  show_best("rmse") %>%
+  slice(1)
+
+# Finalize workflow after tuning
+final_wf_knn <- knn_wf %>%
+  finalize_workflow(best_knn)
+
+# Fit model to training data
+knn_fit <- fit(final_wf_knn, data = train_dat)
+
+# Evaluate model on the test data and calculate RMSE
+knn_fit %>%
+  extract_fit_parsnip() %>%
+  augment(new_data = test_prep_dat) %>%
+  summarise(rmse = sqrt(mean(.resid ** 2)))
+
+# Check performance using cross-validation
+cv_fit_knn <- fit_resamples(final_wf_knn, resamples = folds)
+
+cv_fit_knn %>% 
+  collect_metrics()
+```
+**K-Nearest Neighbors has the testing RMSE value of 2.143839 and training RMSE value of 1.8640846.**
+
+### Decision Tree
+
+A decision tree regression model is developed and fine-tuned using a grid search approach. The model's hyperparameters, specifically cost complexity and tree depth, are systematically adjusted to find the configuration that minimizes the root mean squared error (RMSE) during the tuning process. The workflow integrates data preparation steps defined earlier in the `rec` recipe with the decision tree model. Following the tuning phase, the best set of hyperparameters is identified based on RMSE, and the workflow is finalized with this optimal configuration. The decision tree model is then fitted to the training data and evaluated on a separate test dataset to assess its predictive performance. 
+
+```{r}
+# Tuning
+## Define decision tree model for tuning
+tune_spec <- decision_tree(
+    cost_complexity = tune(),
+    tree_depth = tune()) %>% 
+  set_engine("rpart") %>% 
+  set_mode("regression")
+
+## Create a grid for tuning hyperparameters
+tree_grid <- grid_regular(cost_complexity(),
+                          tree_depth(),
+                          levels = 5)
+
+## Set workflow
+tree_wf <- workflow() %>%
+  add_recipe(rec) %>%
+  add_model (tune_spec)
+
+## Tune model
+tree_res <- tree_wf %>% 
+  tune_grid(resamples = folds,
+            grid = tree_grid)
+
+## Identify best set of hyperparameters based on RMSE
+best_tree <- tree_res %>%
+  show_best("rmse") %>% 
+  slice(1)
+
+# Finalize workflow after tuning
+final_wf <- tree_wf %>% 
+  finalize_workflow(best_tree)
+
+# Fit model to training data
+des_fit <- fit(final_wf, data = train_dat)
+
+# Evaluate model on test data and calculate RMSE
+des_fit %>% 
+  extract_fit_parsnip() %>% 
+  augment(new_data = test_prep_dat) %>% 
+  summarise(
+    rmse = sqrt(mean(.resid ** 2)))
+
+
+# Check performance using cross-validation
+cv_fit <- fit_resamples(final_wf, resamples = folds)
+
+cv_fit %>% collect_metrics()
+```
+**Decision Tree has the testing RMSE value of 2.136136, while training RMSE value of 1.7937461.**
+
+### Random Forest
+
+We are developing a random forest model for predicting the variable 'value' using the ranger implementation. The tuning is conducted over a grid of hyperparameter values, specifically for the number of trees ('trees') and the minimum node size ('min_n'). The workflow involves creating a recipe for data preparation, integrating it with the random forest model, and then tuning the model using cross-validated resampling. The tuning results are analyzed to identify the best set of hyperparameters based on the root mean squared error (RMSE). The final workflow is then adjusted according to the optimal hyperparameters. The model is fitted to the training data, and its performance is evaluated on a separate test dataset. 
+
+```{r}
+# Tuning
+## Define model for tuning
+tune_spec_rf <- rand_forest(trees = tune(),
+                            min_n = tune()) %>%  
+  set_engine("ranger") %>% 
+  set_mode("regression")
+
+## Create a grid for tuning hyperparameters
+rf_grid <- grid_regular(trees(), min_n(), levels = 5)
+
+## Set workflow
+rf_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(tune_spec_rf)
+
+## Tune model
+rf_res <- rf_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = rf_grid)
+
+## Find the best set of hyperparameter based on RMSE
+best_rf <- rf_res %>%
+  show_best("rmse") %>%
+  slice(1)
+
+## Finalize workflow after tuning
+final_wf_rf <- rf_wf %>%
+  finalize_workflow(best_rf)
+
+# Fit model to training data
+rf_fit <- fit(final_wf_rf, data = train_dat)
+
+# Evaluate model on test data and calculate RMSE
+rf_fit %>%
+  extract_fit_parsnip() %>%
+  augment(new_data = test_prep_dat) %>%
+  mutate(.resid = .pred - value) %>% 
+  summarize(rmse = sqrt(mean(.resid ** 2))) 
+
+# Check performance using cross-validation
+cv_fit_rf <- fit_resamples(final_wf_rf, resamples = folds)
+
+cv_fit_rf %>% 
+  collect_metrics()
+```
+**Random Forest has the testing RMSE value of 1.784971, while training RMSE value of 1.4663340.**
+
+### Table summarizing prediciton metrics across models
+
+```{r}
+# Visualization for Linear Regression
+train_dat %>%
+  select(lat, lon, pov, zcta_pop, CMAQ, value) %>% 
+  pivot_longer(
+  cols = - value,
+  names_to = "cat",
+  values_to = "val") %>% 
+  ggplot() + 
+  aes(x = val, y = value, color = cat) + 
+  geom_point() + 
+  facet_wrap(~ cat, scales = "free_x")
+```
+
+```{r}
+# Build table to summarize prediction metrics across models
+data <- matrix(c(2.14837, 2.143839, 2.136136, 1.784971), ncol = 4, byrow = FALSE)
+
+colnames(data) <- c('Linear Regression', 'KNN', 'Decision Tree', 'Random Forest')
+rownames(data) <- c('RMSE')
+
+# Convert to data frame for better compatibility with kable
+data_frame <- as.data.frame(data)
+
+# Use kable for a pretty table
+kable(data_frame, align = "c", caption = "Table: RMSE for Different Models") %>%
+  kable_styling(full_width = FALSE)
+```
+
+In constructing predictive models, we intricately fine-tune and evaluate using cross-validation for robust performance. Linear Regression undergoes 10-fold cross-validation after data normalization. K-Nearest Neighbors optimizes via grid search and faces cross-validation scrutiny before testing. Decision Tree minimizes root mean squared error through cross-validated tuning, while Random Forest navigates a hyperparameter landscape guided by cross-validated resampling. Throughout, cross-validation ensures effective model generalization. Notably, the Random Forest stands out with the lowest testing RMSE at 0.6572773, showcasing its adeptness in capturing nuanced data patterns.
+
+## Discussion
+
+Putting it all together, what did you learn from your data and your model performance?
+
+### Answer the Primary Questions posed above, citing any supporting statistics, visualizations, or results from the data or your models.
+
+**1. Based on test set performance, at what locations does your model give predictions that are closest and furthest from the observed values? What do you hypothesize are the reasons for the good or bad performance at these locations?**
+
+```{r}
+# Create table with smallest and largest rmse
+rmse_table <- rf_fit %>%
+  extract_fit_parsnip() %>%
+  augment(new_data = test_prep_dat) %>%
+  mutate(.resid = .pred - value) %>%
+  arrange(abs(.resid)) %>%
+  slice(c(1, n()))
+rmse_table
+
+# Create table with state and county 
+location_table <- dat %>%
+  select(lat, lon, state, county, city) %>%
+  arrange(desc(lat))
+location_table
+
+# Merge tables to find location
+merged_table <- location_table %>%
+  inner_join(rmse_table, by = c("lat", "lon")) 
+merged_table
+```
+
+Based on the test set performance, the model's predictions are closest to the observed values in , Colorado, as evidenced by the lowest RMSE. On the contrary, Maricopa in Pinal county, Arizona, exhibits the highest RMSE, indicating the largest deviation between the model's predictions and the actual values. A factor to consider when looking at the reliability of predicted vs. observed values, is the funding that goes into the monitors that help improve the accuracy of a regions PM2.5 levels. With cities like Huntsville, which contain mountains and overall a greater biodiversity, there is a possibility that the government has more incentive to allocate more monitors potentially affecting the better estimation of PM2.5 levels. 
+Another factor to consider when looking at the accuracy of the monitors would be that of the condition and life span of these monitors. There is a possibility that cities like Maricopa may have a greater number of monitors but the condition of the monitors is finite and has the possibility of producing an inaccurate result of PM2.5 levels. This may be due to when the adopted the practice of using the monitors, as it is expected the older the monitor the more maintenance it requires.
+
+**2. What variables might predict where your model performs well or not? For example, are their regions of the country where the model does better or worse? Are there variables that are not included in this dataset that you think might improve the model performance if they were included in your model?**
+
+Seen through the histogram, there is a difference between RMSEs for every state. The differences in RMSE could be due to variables that include the allocation of funds each state has to implement said models that predict the proper performance. In areas such as New Mexico having a much greater RMSE than Montana, there is a possibility that there is a greater incentive to have more monitors in Montanta than that of New Mexico, having a smaller overall RMSE value. A variable not included in the dataset that may improve the model's performance would be the number of monitors in each region. By including the number of monitors in the region that would then help us note which regions have a likely chance of producing a better performance, as with more monitors results in more data to accurately depict the values of PM2.5 levels. 
+
+```{r}
+# Aggregate model performance metrics (e.g., RMSE) by region
+performance_by_region <- rf_fit %>%
+  extract_fit_parsnip() %>%
+  augment(new_data = test_prep_dat) %>%
+  mutate(.resid = .pred - value) %>%
+  inner_join(location_table, by = c("lat", "lon")) %>%
+  group_by(state) %>%
+  summarize(mean_rmse = mean(.resid)) %>%
+  arrange(abs(mean_rmse))
+performance_by_region
+
+# Visualize regional variations
+ggplot(performance_by_region, aes(x = reorder(state, mean_rmse), y = mean_rmse)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Model Performance by State", x = "State", y = "Mean RMSE") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels
+```
+
+**3. There is interest in developing more cost-effect approaches to monitoring air pollution on the ground. Two candidates for replacing the use of ground-based monitors are numerical models like CMAQ and satellite-based observations such as AOD. How well do CMAQ and AOD predict ground-level concentrations of PM2.5? How does the prediction performance of your model change when CMAQ or aod are included (or not included) in the model?**
+
+
+```{r}
+# without CMAQ
+without_cmaq_rec <- train_dat %>%
+  recipe(value ~ lat + lon + pov + zcta_pop) %>% 
+  step_normalize(all_numeric_predictors(),-lat, -lon)
+
+# Prepare test data (also work for other models)
+test_prep_dat <- without_cmaq_rec %>%
+  prep(train_dat) %>% 
+  bake(new_dat = test_dat)
+
+## Set workflow
+without_cmaq_rf_wf <- workflow() %>% 
+  add_recipe(without_cmaq_rec) %>% 
+  add_model(tune_spec_rf)
+
+## Tune model
+without_cmaq_rf_res <- without_cmaq_rf_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = rf_grid)
+
+## Find the best set of hyperparameter based on RMSE
+without_cmaq_best_rf <- without_cmaq_rf_res %>%
+  show_best("rmse") %>%
+  slice(1)
+
+## Finalize workflow after tuning
+without_cmaq_final_wf_rf <- without_cmaq_rf_wf %>%
+  finalize_workflow(without_cmaq_best_rf)
+
+# Fit model to training data
+without_cmaq_rf_fit <- fit(without_cmaq_final_wf_rf, data = train_dat)
+
+# Evaluate model on test data and calculate RMSE without CMAQ
+without_cmaq_rmse <- without_cmaq_rf_fit %>%
+  extract_fit_parsnip() %>%
+  augment(new_data = test_prep_dat) %>%
+  mutate(.resid = .pred - value) %>% 
+  summarize(rmse = sqrt(mean(.resid ** 2))) 
+
+
+# with AOD
+aod_rec <- train_dat %>%
+  recipe(value ~ lat + lon + pov + zcta_pop + aod) %>% 
+  step_normalize(all_numeric_predictors(),-lat, -lon)
+
+# Prepare test data (also work for other models)
+test_prep_dat <- aod_rec %>%
+  prep(train_dat) %>% 
+  bake(new_dat = test_dat)
+
+## Set workflow
+aod_rf_wf <- workflow() %>% 
+  add_recipe(aod_rec) %>% 
+  add_model(tune_spec_rf)
+
+## Tune model
+aod_rf_res <- aod_rf_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = rf_grid)
+
+## Find the best set of hyperparameter based on RMSE
+aod_best_rf <- aod_rf_res %>%
+  show_best("rmse") %>%
+  slice(1)
+
+## Finalize workflow after tuning
+aod_final_wf_rf <- aod_rf_wf %>%
+  finalize_workflow(aod_best_rf)
+
+# Fit model to training data
+aod_rf_fit <- fit(aod_final_wf_rf, data = train_dat)
+
+# Evaluate model on test data and calculate RMSE with AOD
+aod_rmse <- aod_rf_fit %>%
+  extract_fit_parsnip() %>%
+  augment(new_data = test_prep_dat) %>%
+  mutate(.resid = .pred - value) %>% 
+  summarize(rmse = sqrt(mean(.resid ** 2))) 
+without_cmaq_rmse
+aod_rmse
+
+```
+
+When CMAQ and AOD are not included in the model, we see an RMSE of 1.777764, slightly lower than that of when we included CMAQ in the original model (1.784971). This shows us that not including CMAQ and solely relying on ground-based predictors yields a better performance. When considering the AOD model, the RSME is even higher than the previous two models, with a value of 1.803389. This shows us that not considering AOD as a predictor yields a better performance. When comparing the two models (with CMAQ or with AOD) we observe a lower RMSE when the model included CMAQ versus AOD. This suggests that we should consider CMAQ as a better cost-effective approach to monitor air pollution on the ground. 
+
+**4. The dataset here did not include data from Alaska or Hawaii. Do you think your model will perform well or not in those two states? Explain your reasoning.**
+
+We think our model will not perform well due to the predictors that were picked to provide the RMSE values. Alaska has low zcta_pop, due to the nature characteristics that prevent people from moving to Alaska in the first place. The conglomeration of population in Alaska would then produce much lower zcta_pop in areas where there is a small population, as a majority of Alaskans live in communities. This gives no incentives to have monitors in areas where the zcta_pop is so low which may give us a false performance. Another reasoning would be the CMAQ value, as the systems takes into account multiple variables which Alaska or Hawaii may not have the proper data to give an effective CMAQ value. This can be due to the climate and terrain of each state which makes it harder to harvest data. 
+
+### Reflection
+When looking back at the project, although the data was tidy, data preparation was the bulk of the challenge (scaling and tuning). We learned how to create a better model by considering baking and preping the data. This gave us different results than if we did not do this step, which showed its importance when doing analysis. The model did in fact perform as well as we originally expected, producing a low RMSE value.
+
+### Contribution
+Contribution of both partners were made, specifically with Dan doing most of the coding,
+especially tuning and running regressions for models. Reigne’s contributions mostly included comments/analyzation
+and visualization. Both partners worked together to finalize the report.
